@@ -70,6 +70,126 @@ async function run() {
       res.status(500).send({ message: "Failed to load studio" });
     }
   });
+
+  // POST add new studio
+  app.post("/api/studios", async (req, res) => {
+    try {
+      const {
+        title,
+        category,
+        hourlyRate,
+        securityDeposit,
+        maxCapacity,
+        location,
+        image,
+        amenities,
+        overview,
+        ownerEmail,
+        ownerName,
+      } = req.body;
+
+      if (
+        !title ||
+        !category ||
+        !hourlyRate ||
+        !maxCapacity ||
+        !location ||
+        !image ||
+        !overview ||
+        !ownerEmail
+      ) {
+        return res.status(400).send({ message: "Please fill in all required fields" });
+      }
+
+      const newStudio = {
+        title,
+        category,
+        hourlyRate: Number(hourlyRate),
+        securityDeposit: Number(securityDeposit) || 0,
+        maxCapacity: Number(maxCapacity),
+        location,
+        image,
+        amenities: Array.isArray(amenities) ? amenities : [],
+        overview,
+        ownerEmail,
+        ownerName: ownerName || "",
+        rating: 0,
+        reviewCount: 0,
+        createdAt: new Date(),
+      };
+
+      const result = await studiosCollection.insertOne(newStudio);
+      res.status(201).send({ message: "Studio added successfully", insertedId: result.insertedId });
+    } catch (error) {
+      res.status(500).send({ message: "Failed to add studio" });
+    }
+  });
+
+  // PUT update studio
+  app.put("/api/studios/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid studio id" });
+      }
+
+      const {
+        title,
+        category,
+        hourlyRate,
+        securityDeposit,
+        maxCapacity,
+        location,
+        image,
+        amenities,
+        overview,
+      } = req.body;
+
+      if (!title || !category || !hourlyRate || !maxCapacity || !location || !image || !overview) {
+        return res.status(400).send({ message: "Please fill in all required fields" });
+      }
+
+      const updatedDoc = {
+        $set: {
+          title,
+          category,
+          hourlyRate: Number(hourlyRate),
+          securityDeposit: Number(securityDeposit) || 0,
+          maxCapacity: Number(maxCapacity),
+          location,
+          image,
+          amenities: Array.isArray(amenities) ? amenities : [],
+          overview,
+          updatedAt: new Date(),
+        },
+      };
+
+      const result = await studiosCollection.updateOne({ _id: new ObjectId(id) }, updatedDoc);
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: "Studio not found" });
+      }
+      res.send({ message: "Studio updated successfully" });
+    } catch (error) {
+      res.status(500).send({ message: "Failed to update studio" });
+    }
+  });
+
+  // DELETE studio
+  app.delete("/api/studios/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid studio id" });
+      }
+      const result = await studiosCollection.deleteOne({ _id: new ObjectId(id) });
+      if (result.deletedCount === 0) {
+        return res.status(404).send({ message: "Studio not found" });
+      }
+      res.send({ message: "Studio deleted successfully" });
+    } catch (error) {
+      res.status(500).send({ message: "Failed to delete studio" });
+    }
+  });
 }
 run().catch(console.error);
 
