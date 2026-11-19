@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const app = express();
@@ -27,6 +28,21 @@ function toMinutes(time) {
   return h * 60 + m;
 }
 
+// Challenge 1: verify JWT stored in HTTPOnly cookie
+const verifyToken = (req, res, next) => {
+  const token = req.cookies?.token;
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).send({ message: "Unauthorized access" });
+    }
+    req.user = decoded;
+    next();
+  });
+};
+
 async function run() {
   await client.connect();
   const db = client.db("studiospace");
@@ -51,7 +67,7 @@ async function run() {
 
   // ---------- STUDIOS ----------
 
-  // GET all studios (search, category filter, sort, limit)
+  // GET all studios (public: search, category filter, sort, limit)
   app.get("/api/studios", async (req, res) => {
     try {
       const { category, search, sort, limit } = req.query;
@@ -80,7 +96,20 @@ async function run() {
     }
   });
 
-  // GET single studio by id
+  // GET studios owned by the logged-in user (My Listings)
+  app.get("/api/my-studios", verifyToken, async (req, res) => {
+    try {
+      const studios = await studiosCollection
+        .find({ ownerEmail: req.user.email })
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.send(studios);
+    } catch (error) {
+      res.status(500).send({ message: "Failed to load your studios" });
+    }
+  });
+
+  // GET single studio by id (public)
   app.get("/api/studios/:id", async (req, res) => {
     try {
       const { id } = req.params;
@@ -97,8 +126,8 @@ async function run() {
     }
   });
 
-  // POST add new studio
-  app.post("/api/studios", async (req, res) => {
+  // POST add new studio (protected)
+  app.post("/api/studios", verifyToken, async (req, res) => {
     try {
       const {
         title,
@@ -110,20 +139,9 @@ async function run() {
         image,
         amenities,
         overview,
-        ownerEmail,
-        ownerName,
       } = req.body;
 
-      if (
-        !title ||
-        !category ||
-        !hourlyRate ||
-        !maxCapacity ||
-        !location ||
-        !image ||
-        !overview ||
-        !ownerEmail
-      ) {
+      if (!title || !category || !hourlyRate || !maxCapacity || !location || !image || !overview) {
         return res.status(400).send({ message: "Please fill in all required fields" });
       }
 
@@ -137,8 +155,8 @@ async function run() {
         image,
         amenities: Array.isArray(amenities) ? amenities : [],
         overview,
-        ownerEmail,
-        ownerName: ownerName || "",
+        ownerEmail: req.user.email,
+        ownerName: req.user.name || "",
         rating: 0,
         reviewCount: 0,
         createdAt: new Date(),
@@ -151,12 +169,20 @@ async function run() {
     }
   });
 
-  // PUT update studio
-  app.put("/api/studios/:id", async (req, res) => {
+  // PUT update studio (protected, owner only)
+  app.put("/api/studios/:id", verifyToken, async (req, res) => {
     try {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) {
         return res.status(400).send({ message: "Invalid studio id" });
+      }
+
+      const studio = await studiosCollection.findOne({ _id: new ObjectId(id) });
+      if (!studio) {
+        return res.status(404).send({ message: "Studio not found" });
+      }
+      if (studio.ownerEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden: you can only edit your own studios" });
       }
 
       const {
@@ -175,42 +201,46 @@ async function run() {
         return res.status(400).send({ message: "Please fill in all required fields" });
       }
 
-      const updatedDoc = {
-        $set: {
-          title,
-          category,
-          hourlyRate: Number(hourlyRate),
-          securityDeposit: Number(securityDeposit) || 0,
-          maxCapacity: Number(maxCapacity),
-          location,
-          image,
-          amenities: Array.isArray(amenities) ? amenities : [],
-          overview,
-          updatedAt: new Date(),
-        },
-      };
-
-      const result = await studiosCollection.updateOne({ _id: new ObjectId(id) }, updatedDoc);
-      if (result.matchedCount === 0) {
-        return res.status(404).send({ message: "Studio not found" });
-      }
+      await studiosCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            title,
+            category,
+            hourlyRate: Number(hourlyRate),
+            securityDeposit: Number(securityDeposit) || 0,
+            maxCapacity: Number(maxCapacity),
+            location,
+            image,
+            amenities: Array.isArray(amenities) ? amenities : [],
+            overview,
+            updatedAt: new Date(),
+          },
+        }
+      );
       res.send({ message: "Studio updated successfully" });
     } catch (error) {
       res.status(500).send({ message: "Failed to update studio" });
     }
   });
 
-  // DELETE studio
-  app.delete("/api/studios/:id", async (req, res) => {
+  // DELETE studio (protected, owner only)
+  app.delete("/api/studios/:id", verifyToken, async (req, res) => {
     try {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) {
         return res.status(400).send({ message: "Invalid studio id" });
       }
-      const result = await studiosCollection.deleteOne({ _id: new ObjectId(id) });
-      if (result.deletedCount === 0) {
+
+      const studio = await studiosCollection.findOne({ _id: new ObjectId(id) });
+      if (!studio) {
         return res.status(404).send({ message: "Studio not found" });
       }
+      if (studio.ownerEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden: you can only delete your own studios" });
+      }
+
+      await studiosCollection.deleteOne({ _id: new ObjectId(id) });
       res.send({ message: "Studio deleted successfully" });
     } catch (error) {
       res.status(500).send({ message: "Failed to delete studio" });
@@ -219,12 +249,12 @@ async function run() {
 
   // ---------- BOOKINGS ----------
 
-  // POST create booking (status: Pending)
-  app.post("/api/bookings", async (req, res) => {
+  // POST create booking (protected, status: Pending)
+  app.post("/api/bookings", verifyToken, async (req, res) => {
     try {
-      const { studioId, userEmail, userName, date, startTime, endTime } = req.body;
+      const { studioId, date, startTime, endTime } = req.body;
 
-      if (!studioId || !userEmail || !date || !startTime || !endTime) {
+      if (!studioId || !date || !startTime || !endTime) {
         return res.status(400).send({ message: "Please fill in all booking details" });
       }
       if (!ObjectId.isValid(studioId)) {
@@ -261,8 +291,8 @@ async function run() {
         studioImage: studio.image,
         studioLocation: studio.location,
         hostEmail: studio.ownerEmail,
-        userEmail,
-        userName: userName || "",
+        userEmail: req.user.email,
+        userName: req.user.name || "",
         date,
         startTime,
         endTime,
@@ -280,15 +310,11 @@ async function run() {
     }
   });
 
-  // GET bookings of a user (?email=...)
-  app.get("/api/bookings", async (req, res) => {
+  // GET bookings made by the logged-in user (My Bookings)
+  app.get("/api/bookings", verifyToken, async (req, res) => {
     try {
-      const { email } = req.query;
-      if (!email) {
-        return res.status(400).send({ message: "Email is required" });
-      }
       const bookings = await bookingsCollection
-        .find({ userEmail: email })
+        .find({ userEmail: req.user.email })
         .sort({ createdAt: -1 })
         .toArray();
       res.send(bookings);
@@ -297,8 +323,21 @@ async function run() {
     }
   });
 
-  // PATCH confirm booking (host action)
-  app.patch("/api/bookings/:id/confirm", async (req, res) => {
+  // GET booking requests received by the logged-in host
+  app.get("/api/host-bookings", verifyToken, async (req, res) => {
+    try {
+      const bookings = await bookingsCollection
+        .find({ hostEmail: req.user.email })
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.send(bookings);
+    } catch (error) {
+      res.status(500).send({ message: "Failed to load booking requests" });
+    }
+  });
+
+  // PATCH confirm booking (protected, host only)
+  app.patch("/api/bookings/:id/confirm", verifyToken, async (req, res) => {
     try {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) {
@@ -307,6 +346,9 @@ async function run() {
       const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
       if (!booking) {
         return res.status(404).send({ message: "Booking not found" });
+      }
+      if (booking.hostEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden: only the host can confirm this booking" });
       }
       if (booking.status !== "Pending") {
         return res.status(400).send({ message: "Only pending bookings can be confirmed" });
@@ -335,8 +377,8 @@ async function run() {
     }
   });
 
-  // PATCH cancel booking (only Pending)
-  app.patch("/api/bookings/:id/cancel", async (req, res) => {
+  // PATCH cancel booking (protected, booking owner only, Pending only)
+  app.patch("/api/bookings/:id/cancel", verifyToken, async (req, res) => {
     try {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) {
@@ -345,6 +387,9 @@ async function run() {
       const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
       if (!booking) {
         return res.status(404).send({ message: "Booking not found" });
+      }
+      if (booking.userEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden: you can only cancel your own bookings" });
       }
       if (booking.status !== "Pending") {
         return res.status(400).send({ message: "Only pending bookings can be cancelled" });
